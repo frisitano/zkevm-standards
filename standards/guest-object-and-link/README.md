@@ -100,22 +100,23 @@ The guest object must satisfy all of the following:
 1. It defines `main` with the `int main(void)` ABI of the [Static Library and Linker Script](../static-library-and-linker-script/README.md) standard.
 2. It defines no other global symbol that is in the platform ABI. A guest that defines `zkvm_keccak256` or `sys_alloc_aligned` would silently replace the vendor's.
 3. Every symbol it leaves undefined is in the platform ABI.
-4. Its code targets the [RISC-V target](../riscv-target/target.md) with the `lp64` ABI and the medium code model.
+4. Its code targets the base [RISC-V target](../riscv-target/target.md), RV64IM, with the `lp64` ABI and the medium code model, and enables no further ISA extension. The extensions a zkVM supports are added at link time (see [SDK](#sdk)).
 
 For Rust, the generic target is the stock `riscv64ima` bare-metal specification with `"os": "zkvm"`, so that `std` builds on the upstream zkVM platform port. The guest package is a `staticlib` built with `lto = "fat"`, `codegen-units = 1`, `panic = "abort"` and `-Clinker-plugin-lto`. This emits one bitcode module, exporting only `main`, plus native `compiler_builtins`. For C and C++, compile with `clang -flto` (full LTO, not ThinLTO) and archive with `llvm-ar`.
 
 ### SDK
 
-An SDK is a directory holding exactly two files, the library and the linker script of the [Static Library and Linker Script](../static-library-and-linker-script/README.md) standard, with these additional requirements:
+An SDK is a directory holding the library and the linker script of the [Static Library and Linker Script](../static-library-and-linker-script/README.md) standard, and optionally a list of ISA extensions, with these additional requirements:
 
 - **`libzkvm.a`** holds one LLVM bitcode module that defines every SDK symbol of the platform ABI. Every other symbol of that module is internal: the vendor's copies of its language runtime, its panic handler and its allocator must not be visible to the guest. The archive may also hold native objects. A native object other than compiler runtime builtins must be linked unconditionally (below).
 - **`zkvm.ld`** names the library with `INPUT(-lzkvm)`, so that the link needs no vendor-specific arguments. It names every native object that must be linked unconditionally with `EXTERN(<symbol>)`, using a symbol only that object defines, because an archive member is otherwise only extracted to satisfy an undefined symbol, and a weak definition elsewhere satisfies it first.
 - **`zkvm.ld`** declares its segments with `PHDRS`, so that the ELF and program headers are not placed in a loadable segment. Without it, `ld.lld` loads them in a segment just below the first section, which can fall inside the stack.
 - The library's bitcode is produced by an LLVM no newer than the linker's.
+- **`zkvm.features`** (optional) is one line of comma-separated LLVM target features, each prefixed with `+` (for example `+zbb,+unaligned-scalar-mem`). It lists the extensions beyond RV64IM that the zkVM executes and proves. Before linking, they are appended to the `target-features` attribute of every function in the guest object's bitcode. A feature is listed only if the zkVM supports it for all guest code; `+unaligned-scalar-mem` in particular requires that misaligned loads and stores are proven, as `Zicclsm` in the [RISC-V target](../riscv-target/target.md) requires.
 
 ### Link
 
-The guest ELF is produced by exactly this command, with the SDK directory `<sdk>` and the guest object `<guest.a>`:
+The guest ELF is produced by adding the SDK's `zkvm.features`, if any, to the guest object's bitcode functions, then running exactly this command, with the SDK directory `<sdk>` and the (rewritten) guest object `<guest.a>`:
 
 ```text
 ld.lld -T <sdk>/zkvm.ld -L <sdk> --gc-sections --lto-O3 -o <guest.elf> <guest.a>
@@ -138,6 +139,10 @@ The accelerator symbols are small: a hash call can be a single custom instructio
 ### Why one internal module per SDK
 
 A Rust vendor library built as a `staticlib` exports its panic handler (`rust_begin_unwind`) and carries its own `core`. Linked next to a Rust guest, the first failed the link on a duplicate symbol. Merging the library into one module and internalizing everything outside the platform ABI removes every such collision while keeping the library in bitcode.
+
+### Why ISA extensions are added at link time
+
+A guest object compiled with an extension cannot run on a zkVM that lacks it: SP1's executor rejects the misaligned loads `+unaligned-scalar-mem` produces, while OpenVM and ZisK run faster with them, and ZisK also proves the bitmanip extensions. Building one object per zkVM would give up the single guest object. Code generation happens during the full-LTO link anyway, so the SDK can name the extensions and the link can apply them. They have to be written into each function's `target-features` attribute, because LLVM uses that attribute instead of, not in addition to, the target machine's features. Applied at link time, they gave the same code as compiling them in: 1,036,035 against 1,036,094 instructions for an ethrex block on OpenVM. Source code that selects a path with a compile-time feature test (Rust's `cfg(target_feature)`) cannot benefit, because that choice is made before the link.
 
 ### Why `EXTERN` rather than link order
 
