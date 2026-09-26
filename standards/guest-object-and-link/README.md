@@ -112,15 +112,19 @@ An SDK is a directory holding the library and the linker script of the [Static L
 - **`zkvm.ld`** names the library with `INPUT(-lzkvm)`, so that the link needs no vendor-specific arguments. It names every native object that must be linked unconditionally with `EXTERN(<symbol>)`, using a symbol only that object defines, because an archive member is otherwise only extracted to satisfy an undefined symbol, and a weak definition elsewhere satisfies it first.
 - **`zkvm.ld`** declares its segments with `PHDRS`, so that the ELF and program headers are not placed in a loadable segment. Without it, `ld.lld` loads them in a segment just below the first section, which can fall inside the stack.
 - The library's bitcode is produced by an LLVM no newer than the linker's.
+- **`zkvm-lto-plugin.so`** (optional) is an LLVM pass plugin, native code built against the linker's LLVM for the host that links. The link loads it into the LTO pipeline, where it may apply code-generation transformations that only this zkVM supports. Its output must be deterministic and must not change what the program computes.
 - **`zkvm.features`** (optional) is one line of comma-separated LLVM target features, each prefixed with `+` (for example `+zbb,+unaligned-scalar-mem`). It lists the extensions beyond RV64IM that the zkVM executes and proves. Before linking, they are appended to the `target-features` attribute of every function in the guest object's bitcode. A feature is listed only if the zkVM supports it for all guest code; `+unaligned-scalar-mem` in particular requires that misaligned loads and stores are proven, as `Zicclsm` in the [RISC-V target](../riscv-target/target.md) requires.
 
 ### Link
 
-The guest ELF is produced by adding the SDK's `zkvm.features`, if any, to the guest object's bitcode functions, then running exactly this command, with the SDK directory `<sdk>` and the (rewritten) guest object `<guest.a>`:
+The guest ELF is produced by adding the SDK's `zkvm.features`, if any, to the guest object's bitcode functions, then running exactly this command, with the SDK directory `<sdk>`, the (rewritten) guest object `<guest.a>`, the guest's LLVM options `<option>` for this zkVM, if any, and the SDK's plugin, if any:
 
 ```text
-ld.lld -T <sdk>/zkvm.ld -L <sdk> --gc-sections --lto-O3 -o <guest.elf> <guest.a>
+ld.lld -T <sdk>/zkvm.ld -L <sdk> --gc-sections --lto-O3 [-mllvm <option>]... \
+    [--load-pass-plugin=<sdk>/zkvm-lto-plugin.so] -o <guest.elf> <guest.a>
 ```
+
+The LLVM options are the guest team's tuning for one zkVM (for example `--inline-threshold`). Like the SDK, they are inputs of the link, and the ELF depends on them.
 
 - `ld.lld` is an upstream LLVM release, and its LLVM major version is at least that of every bitcode producer. LLVM reads bitcode from older releases but not from newer ones. The tooling therefore uses the newest validated LLVM, and producers may lag behind it.
 - The order of the inputs is fixed as above. `ld.lld` resolves archives independently of their order, but where both sides carry a weak definition of the same symbol (typically compiler runtime builtins), the order decides which copy is used. That changes the ELF, and so the verification key, even when the copies are equivalent.
@@ -143,6 +147,14 @@ A Rust vendor library built as a `staticlib` exports its panic handler (`rust_be
 ### Why ISA extensions are added at link time
 
 A guest object compiled with an extension cannot run on a zkVM that lacks it: SP1's executor rejects the misaligned loads `+unaligned-scalar-mem` produces, while OpenVM and ZisK run faster with them, and ZisK also proves the bitmanip extensions. Building one object per zkVM would give up the single guest object. Code generation happens during the full-LTO link anyway, so the SDK can name the extensions and the link can apply them. They have to be written into each function's `target-features` attribute, because LLVM uses that attribute instead of, not in addition to, the target machine's features. Applied at link time, they gave the same code as compiling them in: 1,036,035 against 1,036,094 instructions for an ethrex block on OpenVM. Source code that selects a path with a compile-time feature test (Rust's `cfg(target_feature)`) cannot benefit, because that choice is made before the link.
+
+### Why an SDK may carry an LTO plugin
+
+Some zkVM acceleration lives in code generation, not in a function. ZisK proves a small fixed-size copy or comparison as one DMA operation when the code issues a specific two-instruction pattern, which ZisK's own compiler emits for such copies. Stock LLVM expands them into loads and stores during code generation, before any call to an accelerated `memcpy` exists, so neither the SDK library nor `zkvm.features` can reach them. A pass at the end of the full-LTO pipeline can: the optimizer has already removed every copy it could, and code generation follows. On one ethrex block the ZisK plugin issues 9,781 such operations and saves 58,757 of 714,089 steps.
+
+### Why guest tuning options belong to the link
+
+Optimizer tuning is specific to a guest on a zkVM: ere builds ethrex for ZisK with 23 LLVM options tuned by search, and no other pair. Inlining and loop optimization happen during the full-LTO link, so the options take effect there, from one zkVM-agnostic guest object. For ethrex on ZisK they reduced one block from 655,332 to 510,301 steps.
 
 ### Why `EXTERN` rather than link order
 
