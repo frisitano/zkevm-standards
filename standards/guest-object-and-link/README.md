@@ -106,25 +106,26 @@ For Rust, the generic target is the stock `riscv64ima` bare-metal specification 
 
 ### SDK
 
-An SDK is a directory holding the library and the linker script of the [Static Library and Linker Script](../static-library-and-linker-script/README.md) standard, and optionally a list of ISA extensions, with these additional requirements:
+An SDK is a directory holding the library and the linker script of the [Static Library and Linker Script](../static-library-and-linker-script/README.md) standard, and optionally link settings, with these additional requirements:
 
-- **`libzkvm.a`** holds one LLVM bitcode module that defines every SDK symbol of the platform ABI. Every other symbol of that module is internal: the vendor's copies of its language runtime, its panic handler and its allocator must not be visible to the guest. The archive may also hold native objects. A native object other than compiler runtime builtins must be linked unconditionally (below).
+- **`libzkvm.a`** holds one LLVM bitcode module that defines every SDK symbol of the platform ABI. Every other symbol of that module is internal: the vendor's copies of its language runtime, its panic handler and its allocator must not be visible to the guest. No platform ABI definition is marked `noinline`, and the module's functions carry the target features of `zkvm.features`, so that the link can inline them into guest code. The archive may also hold native objects. A native object other than compiler runtime builtins must be linked unconditionally (below).
 - **`zkvm.ld`** names the library with `INPUT(-lzkvm)`, so that the link needs no vendor-specific arguments. It names every native object that must be linked unconditionally with `EXTERN(<symbol>)`, using a symbol only that object defines, because an archive member is otherwise only extracted to satisfy an undefined symbol, and a weak definition elsewhere satisfies it first.
 - **`zkvm.ld`** declares its segments with `PHDRS`, so that the ELF and program headers are not placed in a loadable segment. Without it, `ld.lld` loads them in a segment just below the first section, which can fall inside the stack.
 - The library's bitcode is produced by an LLVM no newer than the linker's.
 - **`zkvm-lto-plugin.so`** (optional) is an LLVM pass plugin, native code built against the linker's LLVM for the host that links. The link loads it into the LTO pipeline, where it may apply code-generation transformations that only this zkVM supports. Its output must be deterministic and must not change what the program computes.
 - **`zkvm.features`** (optional) is one line of comma-separated LLVM target features, each prefixed with `+` (for example `+zbb,+unaligned-scalar-mem`). It lists the extensions beyond RV64IM that the zkVM executes and proves. Before linking, they are appended to the `target-features` attribute of every function in the guest object's bitcode. A feature is listed only if the zkVM supports it for all guest code; `+unaligned-scalar-mem` in particular requires that misaligned loads and stores are proven, as `Zicclsm` in the [RISC-V target](../riscv-target/target.md) requires.
+- **`zkvm.llvm-args`** (optional) lists LLVM options, one per line, that the vendor's own toolchain applies to every guest (for example SP1's `-misched-prera-direction=bottomup`).
 
 ### Link
 
-The guest ELF is produced by adding the SDK's `zkvm.features`, if any, to the guest object's bitcode functions, then running exactly this command, with the SDK directory `<sdk>`, the (rewritten) guest object `<guest.a>`, the guest's LLVM options `<option>` for this zkVM, if any, and the SDK's plugin, if any:
+The guest ELF is produced by adding the SDK's `zkvm.features`, if any, to the guest object's bitcode functions, then running exactly this command, with the SDK directory `<sdk>`, the (rewritten) guest object `<guest.a>`, the LLVM options `<option>`, if any, and the SDK's plugin, if any:
 
 ```text
 ld.lld -T <sdk>/zkvm.ld -L <sdk> --gc-sections --lto-O3 [-mllvm <option>]... \
     [--load-pass-plugin=<sdk>/zkvm-lto-plugin.so] -o <guest.elf> <guest.a>
 ```
 
-The LLVM options are the guest team's tuning for one zkVM (for example `--inline-threshold`). Like the SDK, they are inputs of the link, and the ELF depends on them.
+The LLVM options are the lines of the SDK's `zkvm.llvm-args`, then the guest team's tuning for this zkVM (for example `--inline-threshold`), so that a guest option can override a vendor one. Like the SDK, they are inputs of the link, and the ELF depends on them.
 
 - `ld.lld` is an upstream LLVM release, and its LLVM major version is at least that of every bitcode producer. LLVM reads bitcode from older releases but not from newer ones. The tooling therefore uses the newest validated LLVM, and producers may lag behind it.
 - The order of the inputs is fixed as above. `ld.lld` resolves archives independently of their order, but where both sides carry a weak definition of the same symbol (typically compiler runtime builtins), the order decides which copy is used. That changes the ELF, and so the verification key, even when the copies are equivalent.
@@ -155,6 +156,10 @@ Some zkVM acceleration lives in code generation, not in a function. ZisK proves 
 ### Why guest tuning options belong to the link
 
 Optimizer tuning is specific to a guest on a zkVM: ere builds ethrex for ZisK with 23 LLVM options tuned by search, and no other pair. Inlining and loop optimization happen during the full-LTO link, so the options take effect there, from one zkVM-agnostic guest object. For ethrex on ZisK they reduced one block from 655,332 to 510,301 steps.
+
+### Why ABI functions must be inlinable
+
+A vendor's own guest build compiles its runtime and the guest together, so its choices about inlining are made for that build. ZisK marks `sys_alloc_aligned` `#[inline(never)]` because its own `std` allocates without calling it. A generic guest's `std` calls it on every allocation: kept out of line, its 692 call sites cost reth 7,000 steps per block. The SDK's code must also carry the zkVM's target features, because the link generates each function with that function's own features: ZisK's keccak sponge, compiled without Zbb and misaligned loads, took 35,233 steps on a block where the released guest took 13,950. With both fixed, reth's median block on ZisK went from 10.0% above the released ELF to parity.
 
 ### Why `EXTERN` rather than link order
 
