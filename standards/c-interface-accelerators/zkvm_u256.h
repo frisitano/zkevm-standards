@@ -5,10 +5,14 @@
  * accelerated 256-bit unsigned integer arithmetic in zkVMs.
  *
  * Design Notes:
- * - All values are represented as 32-byte big-endian byte arrays, matching
- *   EVM word encoding. This avoids endianness conversions at the EVM boundary.
- * - The zkvm_u256 type reuses zkvm_bytes_32 from zkvm_accelerators.h for
- *   consistency with the existing type system.
+ * - All values are four 64-bit limbs, least significant limb first (see
+ *   zkvm_u256). That is how EVM implementations hold their stack words (for
+ *   example ruint in revm and ethereum_types in ethrex) and how the 256-bit
+ *   precompiles of OpenVM (Int256), SP1 (UINT256_MUL) and ZisK (arith256) read
+ *   their operands, so a guest passes pointers to its stack slots and neither
+ *   side converts. The EVM's big-endian encoding of memory, calldata and
+ *   storage is converted where the EVM crosses that boundary, as it already
+ *   is, not on every arithmetic operation.
  * - Functions that can overflow or underflow (add, sub, mul) produce a
  *   full-width result (wrapping mod 2^256), matching EVM semantics.
  * - Division by zero: zkvm_u256_div and zkvm_u256_mod return zero when the
@@ -41,15 +45,19 @@ extern "C" {
  * ============================================================================ */
 
 /**
- * 256-bit unsigned integer, stored as 32 bytes big-endian.
+ * 256-bit unsigned integer as four 64-bit limbs, least significant first:
+ * limbs[0] holds bits 0-63 and limbs[3] bits 192-255. On RISC-V, whose memory
+ * is little-endian, the 32 bytes are the value's little-endian encoding.
  */
-typedef zkvm_bytes_32 zkvm_u256;
+typedef struct {
+    ALIGN8 uint64_t limbs[4];
+} zkvm_u256;
 
 /* ============================================================================
  * Arithmetic operations
  *
  * These mirror the EVM arithmetic opcodes on 256-bit words.
- * All values are big-endian encoded.
+ * All values are little-endian limbs (see zkvm_u256).
  * ============================================================================ */
 
 /**
