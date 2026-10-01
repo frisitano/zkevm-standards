@@ -41,21 +41,20 @@ The platform ABI is the complete set of symbols that may cross the boundary betw
 | --- | --- | --- |
 | `_start` | SDK | [Static Library and Linker Script](../static-library-and-linker-script/README.md) |
 | `main` | guest | [Static Library and Linker Script](../static-library-and-linker-script/README.md) |
-| `read_input`, `write_output` | SDK | [IO Interface](../io-interface/README.md) |
+| `read_input`, `write_output`, `abort` | SDK | [IO Interface](../io-interface/README.md) |
 | the `zkvm_*` accelerators | SDK | [Cryptographic Accelerators C Interface](../c-interface-accelerators/README.md) |
 | `memcpy`, `memmove`, `memset`, `memcmp` (optional) | SDK | [Accelerated Memory Operations](../accelerated-memory-operations/README.md) |
-| `abort`, `exit` | SDK | this proposal |
+| `exit` | SDK | this proposal |
 | `sys_alloc_aligned`, `sys_alloc_words` | SDK | this proposal, [Heap](#heap) |
 | `sys_panic`, `sys_write`, `sys_read`, `sys_rand`, `sys_getenv`, `sys_argc`, `sys_argv` | SDK | this proposal, [Runtime hooks](#runtime-hooks) |
 
 #### Termination
 
 ```c
-_Noreturn void abort(void);
 _Noreturn void exit(int status);
 ```
 
-`abort` terminates the execution as a failure. `exit` terminates it with `status` exactly as if `main` had returned `status`, under the [Termination Semantics](../standard-termination-semantics/README.md) standard: zero is success, and non-zero is failure. A language runtime maps its abnormal terminations (a Rust panic without recovery, C `abort()` and failed `assert()`) to `abort`, or to `exit` with a non-zero status.
+`exit` terminates the execution with `status` exactly as if `main` had returned `status`, under the [Termination Semantics](../standard-termination-semantics/README.md) standard: zero is success, and non-zero is failure. A language runtime maps its abnormal terminations (a Rust panic without recovery, C `abort()` and failed `assert()`) to the [IO Interface](../io-interface/README.md)'s `abort`, or to `exit` with a non-zero status.
 
 #### Heap
 

@@ -2,7 +2,7 @@
  * zkVM IO C Interface
  *
  * This header defines the standard C interface for guest programs to access
- * private input and write public output.
+ * private input, write public output and terminate as a failure.
  *
  * The functions follow:
  * https://github.com/eth-act/zkvm-standards/tree/main/standards/io-interface
@@ -38,6 +38,18 @@ void read_input(const uint8_t** buf_ptr, size_t* buf_size);
  * @param size Number of bytes to append
  */
 void write_output(const uint8_t* output, size_t size);
+
+#ifndef __cplusplus
+/**
+ * Terminate the execution as a failure.
+ *
+ * The execution halts and no valid proof of a successful execution can be
+ * produced, as the Termination Semantics standard requires of abnormal
+ * termination. It is the C library's `abort`: in C++, which `<cstdlib>`
+ * declares as `std::abort`, it is not redeclared here.
+ */
+_Noreturn void abort(void);
+#endif
 
 #ifdef __cplusplus
 }
